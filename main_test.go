@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -111,5 +113,26 @@ func TestDetect(t *testing.T) {
 				t.Errorf("got %q, want %q (%+v)", reason, c.want, got)
 			}
 		})
+	}
+}
+
+func TestNotifyPostsSlackStyleMessage(t *testing.T) {
+	got := make(chan map[string]string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		got <- body
+	}))
+	defer srv.Close()
+
+	m := &Manager{webhook: srv.URL, uiURL: "http://incidents.local"}
+	m.notify(&Incident{ID: "INC-0007", Namespace: "shop", Pod: "api-1", Reason: "OOMKilled", Status: "open",
+		Explanation: &Explanation{Summary: "Out of memory.", LikelyCause: "Limit too low.", NextSteps: []string{"kubectl top pod api-1"}}})
+
+	text := (<-got)["text"]
+	for _, want := range []string{"INC-0007", "shop/api-1", "OOMKilled", "http://incidents.local/incidents/INC-0007", "Out of memory.", "kubectl top pod api-1"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("webhook text missing %q:\n%s", want, text)
+		}
 	}
 }

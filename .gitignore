@@ -1,0 +1,5 @@
+bin/
+dist/
+incidents.json
+.incidents.tmp
+__pycache__/

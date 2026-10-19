@@ -1,0 +1,114 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: incident-explainer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: incident-explainer
+  namespace: incident-explainer
+---
+# Read-only, and only pods, pod logs and events. No Secrets, no ConfigMaps,
+# no write verbs. The explainer can look, it cannot touch.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: incident-explainer-read
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: incident-explainer-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: incident-explainer-read
+subjects:
+  - kind: ServiceAccount
+    name: incident-explainer
+    namespace: incident-explainer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incident-explainer
+  namespace: incident-explainer
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one writer for the incident file
+  selector:
+    matchLabels:
+      app: incident-explainer
+  template:
+    metadata:
+      labels:
+        app: incident-explainer
+    spec:
+      serviceAccountName: incident-explainer
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: incident-explainer
+          image: incident-explainer:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            # Ollama on the host machine (Docker Desktop / kind). In a real
+            # cluster, point this at an in-cluster Ollama Service instead.
+            - name: OLLAMA_HOST
+              value: http://host.docker.internal:11434
+            - name: MODEL
+              value: qwen3:8b
+            - name: DATA_FILE
+              value: /data/incidents.json
+            - name: UI_URL
+              value: http://localhost:8080
+            # Optional: Slack / Teams / Mattermost incoming webhook.
+            # - name: WEBHOOK_URL
+            #   valueFrom:
+            #     secretKeyRef: {name: incident-explainer-webhook, key: url}
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        # Swap for a PersistentVolumeClaim to keep incident history across restarts.
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incident-explainer
+  namespace: incident-explainer
+spec:
+  selector:
+    app: incident-explainer
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
